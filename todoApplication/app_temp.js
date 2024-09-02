@@ -1,213 +1,218 @@
-const express = require('express');
-const app = express();
-const sqlite = require('sqlite')
-const sqlite3 = require('sqlite3');
-const bcrypt = require('bcrypt');
-const {addDays} = require('date-fns');
+const express = require('express')
+const path = require('path')
+const { open } = require('sqlite')
+const sqlite3 = require('sqlite3')
+const bcrypt = require('bcrypt')
+const jwt = require('jsonwebtoken')
+const { format } = require('date-fns')
+const {isValid} = require('date-fns')
+
+const app = express()
+
+app.use(express.json())
 
 
-let dbPromise = sqlite.open({
+let dbPromise = open({
     filename: 'todoApplication.db',
     driver: sqlite3.Database
-});
-
-app.use(express.json());
+})
 
 
-app.get('/todos', async (req, res) => {
-    const db = await dbPromise;
-    let { status, priority, search_q } = req.query;
-    priority = priority?.toUpperCase();
-    // priority = priority?.replace('%20', ' ');
-    status = status?.toUpperCase();
-    // status = status?.replace('%20', ' ');
-    search_q = search_q?.toUpperCase();
-    // search_q = search_q?.replace('%20', ' ');
+function validateRequestParameters(req, res, next) {
+    let { status, priority, search_q, category, due_date } = req.query;
 
-    console.log(req.query);
+    // Replace spaces in URL with %20 (handled by client/browser, but decodeURIComponent ensures proper decoding)
+    // status = decodeURIComponent(status || '');
+    // priority = decodeURIComponent(priority || '');
+    // search_q = decodeURIComponent(search_q || '');
+    // category = decodeURIComponent(category || '');
+    // due_date = decodeURIComponent(due_date || '');
 
-    switch (true) {
-        case status === 'TO DO':
-            res.json(await db.all(`SELECT * FROM todo WHERE status = 'TO DO'`));
-            break;
-        case priority === 'HIGH':
-            res.json(await db.all(`SELECT * FROM todo WHERE priority = 'HIGH'`));
-            break;
-        case priority === 'HIGH' && status === 'IN PROGRESS':
-            res.json(await db.all(`SELECT * FROM todo WHERE priority = 'HIGH' AND status = 'IN PROGRESS'`));
-            break;
-        case search_q === 'PLAY':
-            res.json(await db.all(`SELECT * FROM todo WHERE todo LIKE '%PLAY%'`));
-            break;
-
-        default:
-            res.json(await db.all('SELECT * FROM todo'));
+    // Validate priority
+    const validPriorities = ['LOW', 'MEDIUM', 'HIGH'];
+    if (priority && !validPriorities.includes(priority)) {
+        return res.status(400).send('Invalid Todo Priority');
     }
-});
 
-app.get('/todos/:id', async (req, res) => {
+    // Validate status
+    const validStatuses = ['TO DO', 'IN PROGRESS', 'DONE'];
+    if (status && !validStatuses.includes(status)) {
+        return res.status(400).send('Invalid Todo Status');
+    }
+
+    // Validate category
+    const validCategories = ['WORK', 'HOME', 'LEARNING'];
+    if (category && !validCategories.includes(category)) {
+        return res.status(400).send('Invalid Todo Category');
+    }
+
+    // Validate and format due_date
+    if (due_date) {
+        let date = new Date(due_date);
+        // let month = date.getMonth() + 1;
+        // let day = date.getDate();
+        // let year = date.getFullYear();
+
+        // if (month > 12 || month < 1 || day > 31 || day < 1 || year < 1000 || year > 9999) {
+        //     return res.status(400).send('Invalid Due Date');
+        // } else {
+        //     due_date = format(date, 'yyyy-MM-dd');
+        // }
+        if (!isValid(date)) {
+            return res.status(400).send('Invalid Due Date');
+        } else {
+            due_date = format(date, 'yyyy-MM-dd');
+        }
+    }
+    next()
+
+}
+
+app.get('/todos', validateRequestParameters, async (req, res) => {
     const db = await dbPromise;
-    const { id } = req.params;
-    res.json(await db.get(`SELECT * FROM todo WHERE id = ${id}`));
-});
-
-app.post("/todos/", async (request, response) => {
-    const db = await dbPromise;
-    const { id, todo, priority, status } = request.body; //Destructuring variables from the request body
-    const insertTodo = `
-            INSERT INTO todo (id, todo, priority, status)
-            VALUES (${id},'${todo}','${priority}','${status}');`; //Updated the values with the variables
-    await db.run(insertTodo);
-    response.send("Todo Successfully Added");
-});
-
-app.put('/todos/:id', async (req, res) => {
-    const db = await dbPromise;
-    const { id } = req.params;
-    let { todo, priority, status } = req.body;
-    // convert to uppercase
-    priority = priority?.toUpperCase();
-    status = status?.toUpperCase();
-    console.log('priority', priority);
-    console.log('status', status);
-
-    console.log('this is req.body', req.body);
-    // await db.run(`UPDATE todo SET todo = '${todo}', priority = '${priority}', status = '${status}' WHERE id = ${id}`);
-    // res.json({ message: 'Status Updated' });
-
-    const fieldsToUpdate = [];
-    const values = [];
-    if (todo !== undefined) {
-        fieldsToUpdate.push('todo = ?');
-        values.push(todo);
-        const query = `UPDATE todo SET ${fieldsToUpdate.join(', ')} WHERE id = ?`;
-        values.push(id);
-        await db.run(query, values);
-        res.send('Todo Updated');
+    console.log(req.query)
+    let { status, priority, search_q, category, due_date } = req.query;
+    // let { todoId } = req.params;
+    let query = `SELECT * FROM todo`
+    let queryArray = []
+    if (status !== undefined) {
+        queryArray.push(`status = '${status}'`)
     }
     if (priority !== undefined) {
-        fieldsToUpdate.push('priority = ?');
-        values.push(priority);
-        const query = `UPDATE todo SET ${fieldsToUpdate.join(', ')} WHERE id = ?`;
-        values.push(id);
-        await db.run(query, values);
-        res.send('Priority Updated');
+        queryArray.push(`priority = '${priority}'`)
     }
-    if (status !== undefined) {
-        fieldsToUpdate.push('status = ?');
-        values.push(status);
-        const query = `UPDATE todo SET ${fieldsToUpdate.join(', ')} WHERE id = ?`;
-        values.push(id);
-        await db.run(query, values);
-        res.send('Status Updated');
+    if (search_q !== undefined) {
+        queryArray.push(`todo LIKE '%${search_q}%'`)
     }
+    if (category !== undefined) {
+        queryArray.push(`category = '${category}'`)
+    }
+    if (due_date !== undefined) {
+        queryArray.push(`due_date = '${due_date}'`)
+    }
+    if (queryArray.length !== 0) {
+        query += ` WHERE ${queryArray.join(' AND ')}`
+    }
+    query += ';'
+    console.log(query)
+    let result = await db.all(query)
+    // to camel case
+    result = result.map((todo) => {
+        return {
+            id: todo.id,
+            todo: todo.todo,
+            priority: todo.priority,
+            status: todo.status,
+            category: todo.category,
+            dueDate: todo.due_date
+        }
+    })
+    console.log(result)
+    res.json(result)
+
 });
 
-app.delete('/todos/:id', async (req, res) => {
+app.get('/todos/:todoId/', async (req, res) => {
     const db = await dbPromise;
-    const { id } = req.params;
-    await db.run(`DELETE FROM todo WHERE id = ${id}`);
-    res.json({ message: 'Todo Deleted' });
+    let { todoId } = req.params;
+    let query = `SELECT * FROM todo WHERE id = ${todoId};`
+    let result = await db.get(query)
+    if (result === undefined) {
+        res.status(400).send('Invalid Todo Id')
+    }
+    result = {
+        id: result.id,
+        todo: result.todo,
+        priority: result.priority,
+        status: result.status,
+        category: result.category,
+        dueDate: result.due_date
+    }
+    res.json(result)
+});
+
+app.get('/agenda/', async (req, res) => {
+    const db = await dbPromise;
+    let { date } = req.query;
+    let query = `SELECT * FROM todo WHERE due_date = '${date}';`
+    let result = await db.all(query)
+    result = result.map((todo) => {
+        return {
+            id: todo.id,
+            todo: todo.todo,
+            priority: todo.priority,
+            status: todo.status,
+            category: todo.category,
+            dueDate: todo.due_date
+        }
+    }
+    )
+    res.json(result)
+}
+);
+
+app.post('/todos/', async (req, res) => {
+    const db = await dbPromise;
+    let { todo, priority, status, category, dueDate } = req.body;
+    let query = `INSERT INTO todo (todo, priority, status, category, due_date) VALUES ('${todo}', '${priority}', '${status}', '${category}', '${dueDate}');`
+    await db.run(query)
+    res.send('Todo Successfully Added')
+}
+);
+
+app.put('/todos/:todoId/', async (req, res) => {
+    const db = await dbPromise;
+    let { todoId } = req.params;
+    let { todo, priority, status, category, dueDate } = req.body;
+
+    // check if all fields are present
+    if (todo !== undefined) {
+        let query = `UPDATE todo SET todo = '${todo}' WHERE id = ${todoId};` // update todo
+        await db.run(query)
+        res.send('Todo Updated')
+        return
+    }
+    if (priority !== undefined) {
+        let query = `UPDATE todo SET priority = '${priority}' WHERE id = ${todoId};` // update priority
+        await db.run(query)
+        res.send('Priority Updated')
+        return
+    }
+    if (status !== undefined) {
+        let query = `UPDATE todo SET status = '${status}' WHERE id = ${todoId};` // update status
+        await db.run(query)
+        res.send('Status Updated')
+        return
+    }
+    if (category !== undefined) {
+        let query = `UPDATE todo SET category = '${category}' WHERE id = ${todoId};` // update category
+        await db.run(query)
+        res.send('Category Updated')
+        return
+    }
+    if (dueDate !== undefined) {
+        let query = `UPDATE todo SET due_date = '${dueDate}' WHERE id = ${todoId};` // update due date
+        await db.run(query)
+        res.send('Due Date Updated')
+        return
+    }
+
+    // let query = `UPDATE todo SET todo = '${todo}', priority = '${priority}', status = '${status}', category = '${category}', due_date = '${dueDate}' WHERE id = ${todoId};`
+    // await db.run(query)
+    // res.send('Todo Updated Successfully')
+    //
+});
+
+app.delete('/todos/:todoId/', async (req, res) => {
+    const db = await dbPromise;
+    let { todoId } = req.params;
+    let query = `DELETE FROM todo WHERE id = ${todoId};`
+    await db.run(query)
+    res.send('Todo Deleted')
 });
 
 app.listen(3000, () => {
-    console.log('Server started at http://localhost:3000');
+    console.log('Server started at http://localhost:3000/')
 });
-
-// authentication
-app.post('/users', async (req, res) => {
-    const db = await dbPromise;
-    const {username, name, password, gender, location} = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    if (hashedPassword === undefined) {
-        // create user
-        await db.run(`INSERT INTO users (username, name, password, gender, location) VALUES ('${username}', '${name}', '${password}, ${gender}, ${location}')`);
-        res.send('User Successfully Added');
-    }
-    else {
-        res.status(401)
-        res.send('Username already exists');
-    }
-
-});
-
-// register
-// he POST request with path '/register' should return 'User already exists' as a response if the username already exists
-// he POST request with path '/register' should return 'Password is too short' as a response if the registrant provides a password with less than 5 characters
-
-// app.post('/register', async (request, response) => {
-//     const {username, password} = request.body
-//     const hashedPassword = await bcrypt.hash(password, 10)
-//     const selectUserQuery = `SELECT * FROM user WHERE username = '${username}'`
-//     const dbUser = await db.get(selectUserQuery)
-//     if (dbUser === undefined) {
-//       if (password.length < 5) {
-//         response.status(400)
-//         response.send('Password is too short')
-//       } else {
-//         const createUserQuery = `
-//         INSERT INTO
-//           user (username, password)
-//         VALUES
-//           (
-//             '${username}',
-//             '${hashedPassword}'
-//           );`
-//         await db.run(createUserQuery)
-//         response.status(200)
-//         response.send('User created successfully')
-//       }
-//     } else {
-//       response.status(400)
-//       response.send('User already exists')
-//     }
-//   })
-
-app.post('/register', async (req, res) => {
-    const db = await dbPromise;
-    const {username, password} = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await db.get(`SELECT * FROM users WHERE username = '${username}'`);
-    if (user === undefined) {
-        if (password.length < 5) {
-            res.status(400);
-            res.send('Password is too short');
-        }
-        else {
-            await db.run(`INSERT INTO users (username, password) VALUES ('${username}', '${hashedPassword}')`);
-            res.send('User created successfully');
-        }
-    }
-    else {
-        res.status(400);
-        res.send('User already exists');
-    }
-}
-);
-
-// login
-app.post('/login', async (req, res) => {
-    const db = await dbPromise;
-    const {username, password} = req.body;
-    const user = await db.get(`SELECT * FROM users WHERE username = '${username}'`);
-    if (user === undefined) {
-        res.status(401);
-        res.send('user does not exist');
-    }
-    else {
-        const passwordMatch = await bcrypt.compare(password, user.password);
-        if (passwordMatch) {
-            res.send('Login successful');
-        }
-        else {
-            res.status(401);
-            res.send('Incorrect password');
-        }
-    }
-}
-);
-
 
 module.exports = app;
-
